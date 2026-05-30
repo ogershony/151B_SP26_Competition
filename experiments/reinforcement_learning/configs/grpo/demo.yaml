@@ -14,14 +14,16 @@ num_generations: 4            # GRPO group size G. Was 2 — the statistical wor
                               # informative groups (and the brevity shaping below lifts even
                               # all-correct groups off zero). See reward.py's eval harness.
 max_prompt_length: 1024
-max_completion_length: 3072   # Qwen3-4B-Thinking emits long <think> traces; this caps them.
-                              # The GRPO logits tensor is [per_device_bs, prompt+completion,
-                              # vocab=151936] upcast to fp32 + its grad — the dominant memory
-                              # cost, ≈ per_device_bs·(max_prompt+max_completion)·vocab·8 B.
-                              # At B=4/(1024+3072)=16,384 token-rows that's ~20 GiB for
-                              # logits+grad, ~40 GiB peak — BELOW the B=4/4096 case (20,480
-                              # rows) that OOMs. The brevity reward shortens traces over
-                              # training, so truncation pressure (no box → reward 0) eases.
+max_completion_length: 8192   # Qwen3-4B-Thinking emits long <think> traces; at 3072 most
+                              # rollouts ran off the cap before \boxed{} → all-truncated groups
+                              # → zero advantage (dead prompts). 8192 gives the model room to
+                              # actually finish. This is only affordable because use_liger_loss
+                              # (below) chunks the logits over the sequence dim: peak logits mem
+                              # is [B, chunk, vocab] not [B, prompt+completion, vocab], so it's
+                              # ~constant in length (~4 GiB) instead of the ~30 GiB the old
+                              # unchunked 3072 setup paid. Net: 8k peak < old 3072 peak. Only
+                              # the gradient-checkpointed hidden activations [B,L,hidden≈2560]
+                              # and the vLLM KV cache still grow with L, ~60x cheaper than vocab.
 temperature: 1.0              # sampling REQUIRED — temp=0 collapses the group → zero advantage
 top_p: 1.0
 
@@ -37,17 +39,25 @@ warmup_ratio: 0.03
 lr_scheduler_type: constant
 bf16: true
 gradient_checkpointing: true
+use_liger_loss: true          # Liger's fused/chunked GRPO loss. REQUIRED at this
+                              # completion length: it computes the LM-head + GRPO loss in
+                              # chunks over the sequence dim, so the [B, prompt+completion,
+                              # vocab] fp32 logits tensor (the ~30 GiB memory hog) is never
+                              # materialized — peak logits mem ≈ [B, chunk, vocab] ≈ 4 GiB,
+                              # ~independent of max_completion_length. Needs liger-kernel
+                              # (in the `rl` extra); train_grpo fails fast if it's missing.
 
 # ── vLLM rollout backend (colocate on a single GPU). Falls back to HF on error. ─
 use_vllm: true
 vllm_mode: colocate
 vllm_gpu_memory_utilization: 0.25  # colocate holds TWO 4B copies (vLLM rollout engine +
-                                   # HF training model). The G=4 training peak is ~40 GiB
-                                   # (up from ~30 at G=2), so trim the vLLM slice from 0.3:
-                                   # 0.25 reserves ~20 GiB (~12 GiB KV at 4096 ctx) for
-                                   # rollouts. Budget ≈ 20+40 of 79 GiB. If it still OOMs,
-                                   # drop max_completion_length to 2560 (vLLM→HF fallback
-                                   # also catches an OOM and retries on the slow path).
+                                   # HF training model). With Liger the TRAINING side is now
+                                   # cheap (~few GiB logits regardless of length), so the
+                                   # budget is dominated by weights + the vLLM KV cache, which
+                                   # grows with the 8192 ctx. 0.25 reserves ~20 GiB for
+                                   # rollouts; if rollouts OOM at 8k, raise this slightly, and
+                                   # if training OOMs, lower max_completion_length. (The
+                                   # vLLM→HF fallback still catches an OOM and retries on HF.)
 
 # ── Reward shaping (see reward.py) ──────────────────────────────────────────
 # Total reward = correctness(0/1) + shaping. Shaping is small and bounded so

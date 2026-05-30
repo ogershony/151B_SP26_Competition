@@ -23,6 +23,9 @@ warmup_ratio: 0.0
 lr_scheduler_type: constant
 bf16: true
 gradient_checkpointing: true
+use_liger_loss: false         # keep the smoke test on the plain GRPO loss path (no
+                              # liger-kernel dependency needed); 512-token completions
+                              # don't need the chunked-logits memory win.
 
 # ── Reward shaping (see reward.py; same knobs as demo) ──────────────────────
 reward_brevity_weight: 0.3

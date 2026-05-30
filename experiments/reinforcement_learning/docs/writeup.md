@@ -103,9 +103,15 @@ with non-zero advantage goes **25% → 98% at G=2**, and **48% → 100% at G=4**
   accuracy signal, undistorted by shaping) and `reward/shaping` should both be logged.
   Healthy = `correctness` trending up and mean completion length trending *down*. If
   `shaping` dominates `correctness`, lower `reward_brevity_weight`.
-- **Memory:** G=4/3072 peaks ~40 GiB + ~20 GiB vLLM. If it OOMs, drop
-  `grpo.max_completion_length=2560` (the vLLM→HF fallback also catches an OOM and
-  retries on the slow path).
+- **Memory / completion length:** `max_completion_length` is now **8192** with
+  `use_liger_loss=true` (adds `liger-kernel` to the `rl` extra). Liger chunks the GRPO
+  loss over the sequence dim, so the `[B, prompt+completion, vocab]` fp32 logits (~30 GiB
+  at the old 3072) is never materialized — peak logits mem ≈ `[B, chunk, vocab]` ≈ few GiB,
+  ~independent of length. So 8k peak should sit *under* the old 3072 peak; the early runs
+  truncated before `\boxed{}` (all-truncated groups → zero advantage), which 8k fixes.
+  `train_grpo` fails fast if `use_liger_loss=true` and liger-kernel is missing. If 8k still
+  OOMs: lower `max_completion_length`, then fall back to the deferred levers (`beta=0` to
+  drop the reference forward; vLLM sleep/offload). smoke.yaml keeps `use_liger_loss=false`.
 - ~~**Reward sparsity** / zero advantage on all-right groups~~ — addressed by the
   shaping reward (see §3). Revisit `num_generations` higher (8) if signal is still thin.
 - **MCQ brevity-hack watch:** brevity is gated on *correct*, so short-wrong gains

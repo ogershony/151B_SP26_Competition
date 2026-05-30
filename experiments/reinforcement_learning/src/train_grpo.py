@@ -152,6 +152,25 @@ def build_grpo_config(cfg: DictConfig, output_dir: Path, use_vllm: bool):
     from trl import GRPOConfig
 
     g = cfg.grpo
+
+    # The GRPO loss's dominant memory cost is the [per_device_bs, prompt+completion,
+    # vocab=151936] fp32 logits + grad. `use_liger_loss` swaps in Liger's fused
+    # GRPO loss, which chunks the LM-head projection over the sequence dim → peak
+    # logits memory becomes [B, chunk, vocab], decoupled from completion length.
+    # This is what makes max_completion_length=8192 fit UNDER the old 3072 peak.
+    # Fail fast with a clear message rather than letting GRPOConfig raise a cryptic
+    # error (or, worse, letting the vLLM→HF fallback retry on the plain path and OOM).
+    if g.use_liger_loss:
+        try:
+            import liger_kernel  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                f"grpo.use_liger_loss=true (needed to fit max_completion_length="
+                f"{g.max_completion_length} in memory) but liger-kernel is not installed. "
+                "Install it: pip install -e '.[rl]'  (or set grpo.use_liger_loss=false "
+                "and lower max_completion_length)."
+            ) from e
+
     return GRPOConfig(
         output_dir=str(output_dir),
         seed=cfg.seed,
@@ -173,6 +192,7 @@ def build_grpo_config(cfg: DictConfig, output_dir: Path, use_vllm: bool):
         bf16=g.bf16,
         gradient_checkpointing=g.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False},
+        use_liger_loss=g.use_liger_loss,  # chunked GRPO loss — see note above
         # rollout backend
         use_vllm=use_vllm,
         vllm_mode=g.vllm_mode,

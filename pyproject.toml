@@ -49,7 +49,12 @@ dependencies = [
 notebook = ["ipykernel", "jupyter"]
 # GRPO RL track. trl >=0.17 guarantees GRPOConfig.vllm_mode (colocate/server split);
 # <0.20 caps API churn. Compatible with the transformers 4.x / vllm 0.10 pins above.
-rl = ["trl>=0.17,<0.20"]
+# liger-kernel powers GRPOConfig(use_liger_loss=True): the GRPO loss is computed
+# chunked over the sequence dim, so peak logits memory is [B, chunk, vocab] instead
+# of [B, prompt+completion, vocab] — this is what lets max_completion_length reach 8k
+# at LOWER peak memory than the old 3072 setup. >=0.5.4 has Qwen3 support (and the
+# fused-linear-GRPO loss is architecture-agnostic anyway).
+rl = ["trl>=0.17,<0.20", "liger-kernel>=0.5.4"]
 
 [tool.setuptools.packages.find]
 where = ["."]
