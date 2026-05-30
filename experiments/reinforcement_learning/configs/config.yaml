@@ -1,0 +1,29 @@
+# Top-level Hydra config for the GRPO RL trainer.
+# Override on the CLI: `python -m experiments.reinforcement_learning.src.train_grpo grpo=smoke run_name=grpo_smoke`
+
+defaults:
+  - grpo: demo               # experiments/reinforcement_learning/configs/grpo/demo.yaml
+  - model: default           # init model (base Qwen by default, or an SFT adapter)
+  - lora: r16a32             # LoRA hyperparams (matches the SFT track)
+  - _self_
+
+results_dir: experiments/reinforcement_learning/results
+run_name: null   # if null → "grpo_<UTC_timestamp>"; CLI override: run_name=my_label
+seed: 0
+
+hydra:
+  searchpath:
+    # Hydra needs the shared/configs/ groups at compose time. REPO_ROOT is set by
+    # train_grpo.py from __file__ so this works regardless of cwd (e.g. Colab /content).
+    - file://${oc.env:REPO_ROOT}/shared/configs
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    version: 1
+    disable_existing_loggers: false
+    root: { handlers: [] }
+  hydra_logging:
+    version: 1
+    disable_existing_loggers: false
+    root: { handlers: [] }

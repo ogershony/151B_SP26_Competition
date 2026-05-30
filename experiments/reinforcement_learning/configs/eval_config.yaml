@@ -1,0 +1,35 @@
+# Top-level Hydra config for evaluating a trained GRPO adapter on the standard
+# first-100 slice. Reuses the shared eval/regime/runner groups so the numbers are
+# directly comparable to the prompt_engineering and SFT tracks.
+#
+# Eval the trained adapter:
+#   python -m experiments.reinforcement_learning.src.eval \
+#     adapter_path=experiments/reinforcement_learning/results/grpo_demo_v1/final_adapter \
+#     run_name=grpo_demo_v1_eval
+# Baseline (base model, no adapter): leave adapter_path=null.
+
+defaults:
+  - eval: standard           # shared/configs/eval/standard.yaml (first 100 q, max_tokens)
+  - regime: greedy           # shared/configs/regime/greedy.yaml (deterministic, comparable)
+  - runner: default          # shared/configs/runner/default.yaml (engine=vllm, quant=bf16)
+  - _self_
+
+results_dir: experiments/reinforcement_learning/results
+run_name: grpo_eval
+adapter_path: null   # trained adapter dir; overrides runner.adapter_path when set. Also honors $ADAPTER_PATH.
+seed: 0
+
+hydra:
+  searchpath:
+    - file://${oc.env:REPO_ROOT}/shared/configs
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    version: 1
+    disable_existing_loggers: false
+    root: { handlers: [] }
+  hydra_logging:
+    version: 1
+    disable_existing_loggers: false
+    root: { handlers: [] }

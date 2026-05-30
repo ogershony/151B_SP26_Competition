@@ -1,0 +1,72 @@
+# Small-but-real GRPO defaults. Tuned to finish a sanity-checkable run on a Colab
+# A100. Scale up max_steps / num_generations once the curve looks healthy.
+
+train_data_path: data/public.jsonl
+train_start_index: 100        # train on public.jsonl[100:] — disjoint from the first-100 eval slice (no leakage)
+max_train_samples: null       # null = use all rows from train_start_index onward
+
+# ── Rollout / group ────────────────────────────────────────────────────────
+num_generations: 4            # GRPO group size G. Was 2 — the statistical worst case:
+                              # a 2-member group only carries signal when it splits
+                              # correct/incorrect, so on this near-solved dataset most
+                              # groups came back {1,1} → std 0 → zero advantage → the
+                              # demo_v1 run barely learned. G=4 ≈ doubles the fraction of
+                              # informative groups (and the brevity shaping below lifts even
+                              # all-correct groups off zero). See reward.py's eval harness.
+max_prompt_length: 1024
+max_completion_length: 3072   # Qwen3-4B-Thinking emits long <think> traces; this caps them.
+                              # The GRPO logits tensor is [per_device_bs, prompt+completion,
+                              # vocab=151936] upcast to fp32 + its grad — the dominant memory
+                              # cost, ≈ per_device_bs·(max_prompt+max_completion)·vocab·8 B.
+                              # At B=4/(1024+3072)=16,384 token-rows that's ~20 GiB for
+                              # logits+grad, ~40 GiB peak — BELOW the B=4/4096 case (20,480
+                              # rows) that OOMs. The brevity reward shortens traces over
+                              # training, so truncation pressure (no box → reward 0) eases.
+temperature: 1.0              # sampling REQUIRED — temp=0 collapses the group → zero advantage
+top_p: 1.0
+
+# ── RL / optimization ──────────────────────────────────────────────────────
+beta: 0.04                    # KL coefficient to the reference (base) policy
+learning_rate: 1.0e-6         # RL-low (not the 1e-4 SFT uses)
+per_device_train_batch_size: 4  # must be a multiple of num_generations (TRL divisibility).
+                                # prompts/step = (bs*grad_accum)/G = (4*2)/4 = 2.
+gradient_accumulation_steps: 2
+max_steps: 50
+num_train_epochs: 1
+warmup_ratio: 0.03
+lr_scheduler_type: constant
+bf16: true
+gradient_checkpointing: true
+
+# ── vLLM rollout backend (colocate on a single GPU). Falls back to HF on error. ─
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.25  # colocate holds TWO 4B copies (vLLM rollout engine +
+                                   # HF training model). The G=4 training peak is ~40 GiB
+                                   # (up from ~30 at G=2), so trim the vLLM slice from 0.3:
+                                   # 0.25 reserves ~20 GiB (~12 GiB KV at 4096 ctx) for
+                                   # rollouts. Budget ≈ 20+40 of 79 GiB. If it still OOMs,
+                                   # drop max_completion_length to 2560 (vLLM→HF fallback
+                                   # also catches an OOM and retries on the slow path).
+
+# ── Reward shaping (see reward.py) ──────────────────────────────────────────
+# Total reward = correctness(0/1) + shaping. Shaping is small and bounded so
+# correctness always dominates; its job is to keep all-correct groups from
+# collapsing to zero advantage and to stop scoring truncated traces as plain
+# "wrong". Run `python -m experiments.reinforcement_learning.src.reward` to see
+# the reward distribution + the group-signal numbers these knobs produce.
+reward_brevity_weight: 0.3    # max bonus for a CORRECT answer, decaying linearly to 0 at
+                              # reward_brevity_soft_len tokens. This is the term that gives
+                              # two correct-but-different-length rollouts different rewards.
+reward_brevity_soft_len: null # null → = max_completion_length, so the bonus stays
+                              # informative across the model's real (long) length range.
+reward_format_weight: 0.1     # small bonus for a WRONG answer that still emits a \boxed{}
+                              # (committed to a parseable answer) vs. rambling with none.
+reward_trunc_weight: 0.1      # penalty for a wrong answer that ran off the token cap —
+                              # pushes mass out of the runaway-truncation failure basin.
+
+# ── Logging ────────────────────────────────────────────────────────────────
+log_completions: true         # dump sample completions — invaluable for spotting reward hacking
+logging_steps: 1
+save_steps: 25
+report_to: none

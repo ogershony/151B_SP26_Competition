@@ -1,2 +1,3 @@
 engine: vllm
 quant: bf16
+adapter_path: null

@@ -1,0 +1,16 @@
+# LoRA adapter hyperparams. Matches the SFT track (train_qlora_sft.py) so the two
+# adapters are comparable and the eval runner's max_lora_rank stays consistent.
+
+r: 16
+alpha: 32
+dropout: 0.05
+bias: none
+task_type: CAUSAL_LM
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj

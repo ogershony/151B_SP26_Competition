@@ -35,6 +35,7 @@ class SamplingCfg:
 class RunnerCfg:
     engine: str = "vllm"   # one of: "vllm", "hf"
     quant: str = "bf16"    # one of: "bf16", "bnb"
+    adapter_path: Optional[str] = None
 
 
 @dataclass

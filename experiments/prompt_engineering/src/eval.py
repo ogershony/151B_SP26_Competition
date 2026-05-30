@@ -7,7 +7,11 @@ under `experiments/prompt_engineering/results/`; a leaderboard prints at the end
 
 from __future__ import annotations
 
+import csv
+import json
 import logging
+import math
+import os
 import sys
 import time
 from copy import deepcopy
@@ -17,8 +21,6 @@ from pathlib import Path
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
-
-import os
 
 # Make the repo root importable so `shared.*` resolves whether we're run as a
 # module or as a script. Also export REPO_ROOT for the Hydra `searchpath`
@@ -34,7 +36,7 @@ from shared.io import ResultRow, save_jsonl  # noqa: E402
 from shared.multi_turn import run_php, run_self_refine  # noqa: E402
 from shared.prompt_format import build_chat_messages  # noqa: E402
 from shared.prompts import Prompt  # noqa: E402
-from shared.runner import MODEL_ID, ModelHandle, load_model  # noqa: E402
+from shared.runner import MODEL_ID, ModelHandle, load_model, resolve_adapter_path  # noqa: E402
 from shared.schemas import (  # noqa: E402
     EvalSliceCfg,
     PromptRunEntryCfg,
@@ -301,6 +303,182 @@ def _print_leaderboard(rows: list[dict], slice_label: str, max_tokens_default: i
     print("=" * 110)
 
 
+def _json_safe(value):
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _write_metrics_files(
+    rows: list[dict],
+    output_dir: Path,
+    *,
+    run_name: str,
+    eval_cfg: EvalSliceCfg,
+    runner_cfg: RunnerCfg,
+    model_id: str,
+    adapter_path: str,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_name": run_name,
+        "model_id": model_id,
+        "adapter_path": adapter_path or None,
+        "engine": runner_cfg.engine,
+        "quant": runner_cfg.quant,
+        "slice": eval_cfg.slice,
+        "slice_indices": eval_cfg.slice_indices,
+        "data_path": eval_cfg.data_path,
+        "default_max_tokens": eval_cfg.max_tokens,
+        "rows": rows,
+    }
+    safe_payload = _json_safe(payload)
+    (output_dir / "metrics.json").write_text(json.dumps(safe_payload, indent=2) + "\n")
+    save_jsonl(rows, output_dir / "leaderboard.jsonl")
+
+    csv_path = output_dir / "leaderboard.csv"
+    fieldnames = [
+        "prompt_id",
+        "run_id",
+        "n",
+        "overall_acc",
+        "mcq_acc",
+        "free_acc",
+        "avg_tokens",
+        "pct_boxed",
+        "regime",
+        "max_tokens",
+        "out_path",
+    ]
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: _json_safe(row.get(k)) for k in fieldnames})
+
+
+def _init_wandb(
+    cfg: DictConfig,
+    eval_cfg: EvalSliceCfg,
+    runner_cfg: RunnerCfg,
+    run_dir_name: str,
+    adapter_path: str,
+):
+    project = os.environ.get("WANDB_PROJECT")
+    if not project:
+        print("W&B logging disabled: WANDB_PROJECT is not set.")
+        return None
+    try:
+        import wandb
+    except ImportError as e:
+        raise ImportError(
+            "WANDB_PROJECT is set, but wandb is not installed. "
+            "Install it with `python -m pip install wandb`."
+        ) from e
+
+    tags = [t for t in os.environ.get("WANDB_TAGS", "").split(",") if t]
+    run = wandb.init(
+        project=project,
+        entity=os.environ.get("WANDB_ENTITY") or None,
+        name=os.environ.get("WANDB_NAME") or run_dir_name,
+        group=os.environ.get("WANDB_GROUP") or None,
+        tags=tags,
+        config=_json_safe(
+            {
+                "run_name": run_dir_name,
+                "model_id": MODEL_ID,
+                "adapter_path": adapter_path or None,
+                "eval": OmegaConf.to_container(cfg.eval, resolve=True),
+                "runner": OmegaConf.to_container(cfg.runner, resolve=True),
+                "run": OmegaConf.to_container(cfg.run, resolve=True),
+                "engine": runner_cfg.engine,
+                "quant": runner_cfg.quant,
+                "slice": eval_cfg.slice,
+                "slice_indices": eval_cfg.slice_indices,
+                "data_path": eval_cfg.data_path,
+                "default_max_tokens": eval_cfg.max_tokens,
+            }
+        ),
+    )
+    print(f"W&B logging enabled: project={project}, run={run.name}, url={run.url}")
+    return run
+
+
+def _log_wandb_row(wandb_run, row: dict, elapsed: float) -> None:
+    if wandb_run is None:
+        return
+    import wandb
+
+    prefix = row["prompt_id"]
+    metrics = {
+        f"{prefix}/overall_acc": row["overall_acc"],
+        f"{prefix}/mcq_acc": None if row["mcq_acc"] != row["mcq_acc"] else row["mcq_acc"],
+        f"{prefix}/free_acc": None if row["free_acc"] != row["free_acc"] else row["free_acc"],
+        f"{prefix}/avg_tokens": row["avg_tokens"],
+        f"{prefix}/pct_boxed": row["pct_boxed"],
+        f"{prefix}/n": row["n"],
+        f"{prefix}/max_tokens": row["max_tokens"],
+        f"{prefix}/wall_seconds": elapsed,
+        "overall_acc": row["overall_acc"],
+        "avg_tokens": row["avg_tokens"],
+        "pct_boxed": row["pct_boxed"],
+        "wall_seconds": elapsed,
+    }
+    wandb.log(_json_safe(metrics))
+
+
+def _finish_wandb(wandb_run, rows: list[dict], metrics_dirs: list[Path]) -> None:
+    if wandb_run is None:
+        return
+    import wandb
+
+    table = wandb.Table(
+        columns=[
+            "prompt_id",
+            "run_id",
+            "n",
+            "overall_acc",
+            "mcq_acc",
+            "free_acc",
+            "avg_tokens",
+            "pct_boxed",
+            "regime",
+            "max_tokens",
+            "out_path",
+        ]
+    )
+    for row in rows:
+        table.add_data(
+            row["prompt_id"],
+            row["run_id"],
+            row["n"],
+            row["overall_acc"],
+            None if row["mcq_acc"] != row["mcq_acc"] else row["mcq_acc"],
+            None if row["free_acc"] != row["free_acc"] else row["free_acc"],
+            row["avg_tokens"],
+            row["pct_boxed"],
+            row["regime"],
+            row["max_tokens"],
+            row["out_path"],
+        )
+    wandb.log({"leaderboard": table})
+
+    artifact = wandb.Artifact(f"{wandb_run.name}-metrics", type="eval-metrics")
+    for metrics_dir in metrics_dirs:
+        for name in ("metrics.json", "leaderboard.csv", "leaderboard.jsonl"):
+            path = metrics_dir / name
+            if path.exists():
+                artifact.add_file(str(path), name=f"{metrics_dir.name}/{name}")
+    wandb_run.log_artifact(artifact)
+    print(f"W&B metrics artifact logged: {artifact.name}")
+    wandb_run.finish()
+    print("W&B run finished.")
+
+
 # ─── Hydra entrypoint ────────────────────────────────────────────────────────
 
 
@@ -319,9 +497,13 @@ def main(cfg: DictConfig) -> None:
         merged = OmegaConf.merge(OmegaConf.structured(schema), node)
         return OmegaConf.to_object(merged)
 
+    if cfg.get("prompt_id") is not None:
+        OmegaConf.update(cfg, "run.runs", [{"prompt_id": cfg.prompt_id}], merge=False)
+
     eval_cfg: EvalSliceCfg = _typed(cfg.eval, EvalSliceCfg)  # type: ignore[assignment]
     default_regime: SamplingCfg = _typed(cfg.regime, SamplingCfg)  # type: ignore[assignment]
     runner_cfg: RunnerCfg = _typed(cfg.runner, RunnerCfg)  # type: ignore[assignment]
+    adapter_path = resolve_adapter_path(runner_cfg)
     runs: list[PromptRunEntryCfg] = [_typed(e, PromptRunEntryCfg) for e in cfg.run.runs]
 
     if cfg.get("run_name"):
@@ -331,6 +513,11 @@ def main(cfg: DictConfig) -> None:
         run_group = HydraConfig.get().runtime.choices["run"]
         run_dir_name = f"{run_group}_{invocation_ts}"
     invocation_results_dir = Path(cfg.results_dir) / run_dir_name
+    extra_metrics_dir = (
+        Path(os.environ["EVAL_METRICS_DIR"]) / run_dir_name
+        if os.environ.get("EVAL_METRICS_DIR")
+        else None
+    )
 
     items = load_eval_slice(eval_cfg)
     print(
@@ -338,6 +525,8 @@ def main(cfg: DictConfig) -> None:
         f"(slice={eval_cfg.slice}, max_tokens={eval_cfg.max_tokens})."
     )
     print(f"Writing results to {invocation_results_dir}")
+    if extra_metrics_dir:
+        print(f"Mirroring metrics to {extra_metrics_dir}")
     if not items:
         print("Empty eval slice; nothing to do.")
         return
@@ -351,8 +540,13 @@ def main(cfg: DictConfig) -> None:
         _confirm_long_run(items, sampling, max_tokens, prompt.id)
 
     run_registry = TimingsRegistry()
+    wandb_run = _init_wandb(cfg, eval_cfg, runner_cfg, run_dir_name, adapter_path)
 
-    print(f"Loading model: {MODEL_ID} (engine={runner_cfg.engine}, quant={runner_cfg.quant})")
+    adapter_msg = f", adapter={adapter_path}" if adapter_path else ""
+    print(
+        f"Loading model: {MODEL_ID} "
+        f"(engine={runner_cfg.engine}, quant={runner_cfg.quant}{adapter_msg})"
+    )
     with use_registry(run_registry):
         handle = load_model(runner_cfg)
     print("Model loaded.")
@@ -388,9 +582,38 @@ def main(cfg: DictConfig) -> None:
         )
         print(prompt_registry.render_table(f"timings — {prompt.id}"))
         run_registry.merge(prompt_registry)
+        _log_wandb_row(wandb_run, leaderboard, elapsed)
+
+        metrics_dirs = [invocation_results_dir]
+        if extra_metrics_dir:
+            metrics_dirs.append(extra_metrics_dir)
+        for metrics_dir in metrics_dirs:
+            _write_metrics_files(
+                leaderboard_rows,
+                metrics_dir,
+                run_name=run_dir_name,
+                eval_cfg=eval_cfg,
+                runner_cfg=runner_cfg,
+                model_id=MODEL_ID,
+                adapter_path=adapter_path,
+            )
 
     _print_leaderboard(leaderboard_rows, eval_cfg.slice, eval_cfg.max_tokens)
     print(run_registry.render_table("timings — full run"))
+    metrics_dirs = [invocation_results_dir]
+    if extra_metrics_dir:
+        metrics_dirs.append(extra_metrics_dir)
+    for metrics_dir in metrics_dirs:
+        _write_metrics_files(
+            leaderboard_rows,
+            metrics_dir,
+            run_name=run_dir_name,
+            eval_cfg=eval_cfg,
+            runner_cfg=runner_cfg,
+            model_id=MODEL_ID,
+            adapter_path=adapter_path,
+        )
+    _finish_wandb(wandb_run, leaderboard_rows, metrics_dirs)
 
 
 if __name__ == "__main__":

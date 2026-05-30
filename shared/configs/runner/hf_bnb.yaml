@@ -1,2 +1,3 @@
 engine: hf
 quant: bnb
+adapter_path: null

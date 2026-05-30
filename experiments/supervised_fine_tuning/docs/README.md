@@ -12,3 +12,9 @@
 **Gating:** Don't start until prompt-engineering and parameter-sampling experiments have a clean, pinned baseline to compare against — otherwise it's impossible to attribute lift to SFT vs. better prompts.
 
 **Success looks like:** Beats the best prompt-engineering + parameter-sampling baseline on the eval slice, with the largest gains on free-form (where formatting and brevity matter most).
+
+## Command References
+
+- `run_commands.md`: full experiment history and longer command notes.
+- `mixed_27k_quick_commands.md`: concise commands for mixed 27k training,
+  checkpoint resume, eval, and Google Drive upload with rclone.

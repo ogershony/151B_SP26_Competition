@@ -1,0 +1,3 @@
+runs:
+  - prompt_id: cot_structured_sc
+    regime: high_div_8

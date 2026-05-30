@@ -1,0 +1,8 @@
+# Which checkpoint GRPO initializes from.
+#   init_adapter_path = null  → fresh LoRA on top of the base model (default).
+#   init_adapter_path = <dir> → warm-start by continuing to train an existing
+#                               (e.g. SFT) adapter. The README recommends starting
+#                               from the best SFT checkpoint once one exists.
+
+model_id: ${oc.env:MODEL_ID,Qwen/Qwen3-4B-Thinking-2507}
+init_adapter_path: null

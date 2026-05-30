@@ -11,6 +11,7 @@ defaults:
 results_dir: experiments/prompt_engineering/results
 run_name: null   # if null → "<run_group>_<UTC_timestamp>"; CLI override: run_name=my_label
 seed: 0
+prompt_id: null   # if set, overrides run.runs to [{prompt_id: <value>}]; e.g. prompt_id=cot_structured
 
 hydra:
   searchpath:

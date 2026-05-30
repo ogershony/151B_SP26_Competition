@@ -39,14 +39,14 @@ COT_STRUCTURED = Prompt(
         "Plan: one-line strategy.\n"
         "Compute: do the math (this is the only place where work is shown; keep it terse).\n"
         "Verify: one sanity check.\n"
-        "Answer: \\boxed{...}.\n"
-        "If the problem has multiple sub-answers, put them comma-separated inside one \\boxed{}, "
-        "e.g. \\boxed{3, 7}."
+        "Answer: put ALL final answers inside ONE \\boxed{}. "
+        "Single answer: \\boxed{42}. "
+        "Multiple sub-answers, comma-separated: \\boxed{3, 7}."
     ),
     system_mcq=(
         "You are an expert mathematician. Solve in five short sections — Parse, Plan, "
-        "Compute, Verify, Answer — and put only the letter inside \\boxed{} on the Answer "
-        "line, e.g. \\boxed{C}."
+        "Compute, Verify, Answer — and on the Answer line write ONLY the letter inside "
+        "\\boxed{}, e.g. Answer: \\boxed{C}."
     ),
 )
 
@@ -251,11 +251,36 @@ SELF_REFINE_1PASS = Prompt(
 )
 
 
+# ─── cot_structured + self-consistency ───────────────────────────────────────
+
+# cot_structured with a diversity cue in the Plan section so majority voting
+# across high_div_8 samples sees genuinely different reasoning paths.
+COT_STRUCTURED_SC = Prompt(
+    id="cot_structured_sc",
+    kind="self_consistency",
+    system_free=(
+        "You are an expert mathematician. Solve in five named sections, each kept short:\n"
+        "Parse: restate what is asked in one sentence.\n"
+        "Plan: one-line strategy — pick a fresh approach each attempt.\n"
+        "Compute: do the math (this is the only place where work is shown; keep it terse).\n"
+        "Verify: one sanity check.\n"
+        "Answer: put ALL final answers inside ONE \\boxed{}. "
+        "Single answer: \\boxed{42}. "
+        "Multiple sub-answers, comma-separated: \\boxed{3, 7}."
+    ),
+    system_mcq=(
+        "You are an expert mathematician. Solve in five short sections — Parse, Plan, "
+        "Compute, Verify, Answer — picking a fresh approach each attempt. "
+        "On the Answer line write ONLY the letter inside \\boxed{}, e.g. Answer: \\boxed{C}."
+    ),
+)
+
 # ─── Registry ────────────────────────────────────────────────────────────────
 
 _LOCAL_PROMPTS = [
     COT_EXPLICIT,
     COT_STRUCTURED,
+    COT_STRUCTURED_SC,
     FEWSHOT_2_BASIC,
     FEWSHOT_3_DIVERSE,
     SC_DIVERSE_PATHS,

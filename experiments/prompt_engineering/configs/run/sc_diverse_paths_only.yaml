@@ -1,0 +1,3 @@
+runs:
+  - prompt_id: sc_diverse_paths
+    regime: high_div_8
